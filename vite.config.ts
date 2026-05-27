@@ -6,7 +6,7 @@ import { defineConfig } from 'vite';
 export default defineConfig(() => {
   return {
     // Aponta corretamente para o repositório atual
-    base: '/Notas-Bine/', 
+    base: '/Hernany-12/', 
     plugins: [react(), tailwindcss()],
     resolve: {
       alias: {
