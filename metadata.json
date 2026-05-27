@@ -1,0 +1,6 @@
+{
+  "name": "Benefício dos Engenheiros",
+  "description": "Gerenciador completo de benefícios dos engenheiros da BENE Engenharia, permitindo cadastro, novos termos personalizados e controle de datas de atualização.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
