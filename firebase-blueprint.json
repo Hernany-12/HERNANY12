@@ -1,0 +1,70 @@
+{
+  "entities": {
+    "Engineer": {
+      "title": "Engineer",
+      "description": "An engineer with their associated benefit values and timestamps.",
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "description": "Unique identifier of the engineer"
+        },
+        "name": {
+          "type": "string",
+          "description": "The engineer's full name"
+        },
+        "values": {
+          "type": "object",
+          "description": "A dynamic record mapping benefit term IDs to their values"
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "ISO timestamp of creation"
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "ISO timestamp of the latest update"
+        }
+      },
+      "required": ["id", "name", "values"]
+    },
+    "Term": {
+      "title": "Term",
+      "description": "A customized benefit column/field descriptor.",
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "description": "Unique identifier of the term"
+        },
+        "label": {
+          "type": "string",
+          "description": "The field label or question (e.g. Carro Alugado)"
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "ISO timestamp of creation"
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "ISO timestamp of the latest update"
+        }
+      },
+      "required": ["id", "label"]
+    }
+  },
+  "firestore": {
+    "/engineers/{engineerId}": {
+      "schema": "Engineer",
+      "description": "Collection storing the active engineers"
+    },
+    "/terms/{termId}": {
+      "schema": "Term",
+      "description": "Collection storing the dynamic columns / fields of benefits"
+    }
+  }
+}
