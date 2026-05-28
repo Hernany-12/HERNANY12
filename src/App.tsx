@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { 
   Plus, 
   Search, 
@@ -27,6 +27,8 @@ import { motion, AnimatePresence } from 'motion/react';
 import { Term, Engineer } from './types';
 import { INITIAL_TERMS, INITIAL_ENGINEERS } from './data/defaults';
 import Logo from './components/Logo';
+import { db, isFirebaseConfigured, handleFirestoreError, OperationType, testConnection } from './lib/firebase';
+import { doc, setDoc, deleteDoc, collection, onSnapshot } from 'firebase/firestore';
 
 export default function App() {
   // --- STATE ---
@@ -86,6 +88,74 @@ export default function App() {
     }
   };
 
+  // --- REAL-TIME CLOUD FIREBASE SYNC ---
+  useEffect(() => {
+    if (!isFirebaseConfigured || !db) {
+      console.log('Firebase is not yet configured. Operating in Offline (LocalStorage) mode.');
+      return;
+    }
+
+    testConnection().then((ok) => {
+      if (ok) console.log('Successfully connected to Cloud Firestore!');
+    });
+
+    // Setup terms subscription
+    const unsubTerms = onSnapshot(collection(db, 'terms'), (snapshot) => {
+      const list: Term[] = [];
+      snapshot.forEach((doc) => {
+        list.push(doc.data() as Term);
+      });
+      if (list.length > 0) {
+        setTerms(list);
+      } else {
+        // Bootstrap: If Firestore is totally empty, upload INITIAL_TERMS
+        INITIAL_TERMS.forEach(async (t) => {
+          try {
+            await setDoc(doc(db, 'terms', t.id), { id: t.id, name: t.name });
+          } catch (e) {
+            console.error('Bootstrap term failed', e);
+          }
+        });
+      }
+    }, (error) => {
+      handleFirestoreError(error, OperationType.GET, 'terms');
+    });
+
+    // Setup engineers subscription
+    const unsubEngineers = onSnapshot(collection(db, 'engineers'), (snapshot) => {
+      const list: Engineer[] = [];
+      snapshot.forEach((doc) => {
+        list.push(doc.data() as Engineer);
+      });
+      // Sort: Newest first based on createdAt
+      list.sort((a, b) => {
+        const dateA = new Date(a.createdAt || '').getTime();
+        const dateB = new Date(b.createdAt || '').getTime();
+        return dateB - dateA;
+      });
+      
+      if (list.length > 0) {
+        setEngineers(list);
+      } else {
+        // Bootstrap: If Firestore is totally empty, upload INITIAL_ENGINEERS
+        INITIAL_ENGINEERS.forEach(async (eng) => {
+          try {
+            await setDoc(doc(db, 'engineers', eng.id), eng);
+          } catch (e) {
+            console.error('Bootstrap engineer failed', e);
+          }
+        });
+      }
+    }, (error) => {
+      handleFirestoreError(error, OperationType.GET, 'engineers');
+    });
+
+    return () => {
+      unsubTerms();
+      unsubEngineers();
+    };
+  }, []);
+
   // --- ACTIONS: ENGINEERS ---
 
   const handleOpenCreateEngineer = () => {
@@ -123,36 +193,37 @@ export default function App() {
     }
 
     const nowIso = new Date().toISOString();
+    const targetId = editingEngineer ? editingEngineer.id : 'eng-' + Date.now().toString(36) + Math.random().toString(36).substr(2, 5);
 
-    if (editingEngineer) {
-      // Update existing engineer record
-      const updatedList = engineers.map(eng => {
-        if (eng.id === editingEngineer.id) {
-          return {
-            ...eng,
-            name: engineerName.trim(),
-            values: { ...engineerValues },
-            updatedAt: nowIso
-          };
-        }
-        return eng;
-      });
-      setEngineers(updatedList);
-      saveToLocalStorage(terms, updatedList);
-      showAlert(`Cadastro do engenheiro ${engineerName} atualizado com sucesso!`);
+    const updatedEng: Engineer = {
+      id: targetId,
+      name: engineerName.trim(),
+      values: { ...engineerValues },
+      createdAt: editingEngineer ? editingEngineer.createdAt : nowIso,
+      updatedAt: nowIso
+    };
+
+    if (isFirebaseConfigured && db) {
+      setDoc(doc(db, 'engineers', targetId), updatedEng)
+        .then(() => {
+          showAlert(editingEngineer ? `Cadastro de ${engineerName} atualizado na nuvem!` : `Engenheiro ${engineerName} cadastrado na nuvem!`);
+        })
+        .catch(error => {
+          handleFirestoreError(error, OperationType.WRITE, `engineers/${targetId}`);
+        });
     } else {
-      // Create new engineer record
-      const newEng: Engineer = {
-        id: 'eng-' + Date.now().toString(36) + Math.random().toString(36).substr(2, 5),
-        name: engineerName.trim(),
-        values: { ...engineerValues },
-        createdAt: nowIso,
-        updatedAt: nowIso
-      };
-      const updatedList = [newEng, ...engineers];
-      setEngineers(updatedList);
-      saveToLocalStorage(terms, updatedList);
-      showAlert(`Engenheiro ${engineerName} cadastrado com sucesso!`);
+      // Offline fallback
+      if (editingEngineer) {
+        const updatedList = engineers.map(eng => eng.id === editingEngineer.id ? updatedEng : eng);
+        setEngineers(updatedList);
+        saveToLocalStorage(terms, updatedList);
+        showAlert(`Cadastro do engenheiro ${engineerName} atualizado com sucesso!`);
+      } else {
+        const updatedList = [updatedEng, ...engineers];
+        setEngineers(updatedList);
+        saveToLocalStorage(terms, updatedList);
+        showAlert(`Engenheiro ${engineerName} cadastrado com sucesso!`);
+      }
     }
 
     setIsEngineerModalOpen(false);
@@ -160,10 +231,20 @@ export default function App() {
 
   const handleDeleteEngineer = (id: string, name: string) => {
     if (confirm(`Deseja realmente remover o registro de benefícios do engenheiro "${name}"?`)) {
-      const updatedList = engineers.filter(eng => eng.id !== id);
-      setEngineers(updatedList);
-      saveToLocalStorage(terms, updatedList);
-      showAlert(`Registro de ${name} removido com sucesso.`, 'success');
+      if (isFirebaseConfigured && db) {
+        deleteDoc(doc(db, 'engineers', id))
+          .then(() => {
+            showAlert(`Registro de ${name} removido da nuvem.`, 'success');
+          })
+          .catch(error => {
+            handleFirestoreError(error, OperationType.DELETE, `engineers/${id}`);
+          });
+      } else {
+        const updatedList = engineers.filter(eng => eng.id !== id);
+        setEngineers(updatedList);
+        saveToLocalStorage(terms, updatedList);
+        showAlert(`Registro de ${name} removido com sucesso.`, 'success');
+      }
     }
   };
 
@@ -191,36 +272,61 @@ export default function App() {
     const val = termLabelInput.trim();
 
     if (editingTerm) {
-      // Edit Term title
-      const updatedTerms = terms.map(t => t.id === editingTerm.id ? { ...t, name: val } : t);
-      setTerms(updatedTerms);
-      // We keep engineer values intact as the keys (id) don't change!
-      saveToLocalStorage(updatedTerms, engineers);
-      showAlert(`Termo atualizado para "${val}"`);
+      const updatedTerm: Term = { ...editingTerm, name: val };
+      if (isFirebaseConfigured && db) {
+        setDoc(doc(db, 'terms', editingTerm.id), updatedTerm)
+          .then(() => {
+            showAlert(`Termo atualizado para "${val}" na nuvem!`);
+          })
+          .catch(error => {
+            handleFirestoreError(error, OperationType.WRITE, `terms/${editingTerm.id}`);
+          });
+      } else {
+        const updatedTerms = terms.map(t => t.id === editingTerm.id ? updatedTerm : t);
+        setTerms(updatedTerms);
+        saveToLocalStorage(updatedTerms, engineers);
+        showAlert(`Termo atualizado para "${val}"`);
+      }
     } else {
-      // Create a unique clean slug / key for this new term
       const cleanId = 'term_' + Date.now().toString(36) + '_' + Math.random().toString(36).substr(2, 4);
-      
       const newTerm: Term = {
         id: cleanId,
         name: val
       };
 
-      const updatedTerms = [...terms, newTerm];
-      setTerms(updatedTerms);
-      
-      // Update existing engineers mapping to have a blank value for this new term
-      const updatedEngineers = engineers.map(eng => ({
-        ...eng,
-        values: {
-          ...eng.values,
-          [cleanId]: ''
-        }
-      }));
-
-      setEngineers(updatedEngineers);
-      saveToLocalStorage(updatedTerms, updatedEngineers);
-      showAlert(`Novo termo "${val}" adicionado ao formulário.`);
+      if (isFirebaseConfigured && db) {
+        setDoc(doc(db, 'terms', cleanId), newTerm)
+          .then(() => {
+            // Option: expand current engineers values to include blank for new key
+            engineers.forEach(eng => {
+              const updatedEng = {
+                ...eng,
+                values: {
+                  ...eng.values,
+                  [cleanId]: ''
+                }
+              };
+              setDoc(doc(db, 'engineers', eng.id), updatedEng).catch(() => {});
+            });
+            showAlert(`Novo termo "${val}" adicionado na nuvem!`);
+          })
+          .catch(error => {
+            handleFirestoreError(error, OperationType.WRITE, `terms/${cleanId}`);
+          });
+      } else {
+        const updatedTerms = [...terms, newTerm];
+        setTerms(updatedTerms);
+        const updatedEngineers = engineers.map(eng => ({
+          ...eng,
+          values: {
+            ...eng.values,
+            [cleanId]: ''
+          }
+        }));
+        setEngineers(updatedEngineers);
+        saveToLocalStorage(updatedTerms, updatedEngineers);
+        showAlert(`Novo termo "${val}" adicionado ao formulário.`);
+      }
     }
 
     setIsTermModalOpen(false);
@@ -229,23 +335,39 @@ export default function App() {
   const handleDeleteTerm = (termId: string, label: string) => {
     const warningText = `Atenção: Ao deletar o termo "${label}", as informações cadastradas para todos os engenheiros neste campo específico serão perdidas permanentemente. Deseja prosseguir?`;
     if (confirm(warningText)) {
-      // Filter out this term
-      const updatedTerms = terms.filter(t => t.id !== termId);
-      
-      // Remove value key from all engineers record
-      const updatedEngineers = engineers.map(eng => {
-        const copyValues = { ...eng.values };
-        delete copyValues[termId];
-        return {
-          ...eng,
-          values: copyValues
-        };
-      });
-
-      setTerms(updatedTerms);
-      setEngineers(updatedEngineers);
-      saveToLocalStorage(updatedTerms, updatedEngineers);
-      showAlert(`O termo "${label}" foi deletado do sistema.`);
+      if (isFirebaseConfigured && db) {
+        deleteDoc(doc(db, 'terms', termId))
+          .then(() => {
+            // Also clean memory mapping of terms for all engineers
+            engineers.forEach(eng => {
+              const copyValues = { ...eng.values };
+              delete copyValues[termId];
+              const updatedEng = {
+                ...eng,
+                values: copyValues
+              };
+              setDoc(doc(db, 'engineers', eng.id), updatedEng).catch(() => {});
+            });
+            showAlert(`O termo "${label}" foi removido da nuvem.`);
+          })
+          .catch(error => {
+            handleFirestoreError(error, OperationType.DELETE, `terms/${termId}`);
+          });
+      } else {
+        const updatedTerms = terms.filter(t => t.id !== termId);
+        const updatedEngineers = engineers.map(eng => {
+          const copyValues = { ...eng.values };
+          delete copyValues[termId];
+          return {
+            ...eng,
+            values: copyValues
+          };
+        });
+        setTerms(updatedTerms);
+        setEngineers(updatedEngineers);
+        saveToLocalStorage(updatedTerms, updatedEngineers);
+        showAlert(`O termo "${label}" foi deletado do sistema.`);
+      }
     }
   };
 
@@ -476,9 +598,26 @@ export default function App() {
                 >
                   Benefício dos Engenheiros
                 </h1>
-                <p className="text-xs text-emerald-800 font-sans font-medium">
-                  Gestão estratégica de benefícios &middot; BENE Engenharia
-                </p>
+                <div className="flex flex-col sm:flex-row sm:items-center gap-1.5">
+                  <p className="text-xs text-emerald-800 font-sans font-medium">
+                    Gestão estratégica de benefícios &middot; BENE Engenharia
+                  </p>
+                  <span className="text-emerald-300 select-none hidden sm:inline">&middot;</span>
+                  {isFirebaseConfigured ? (
+                    <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded-full text-[10px] sm:self-center self-start font-semibold bg-emerald-100 text-[#0b7a44] border border-emerald-200">
+                      <span className="w-1.5 h-1.5 rounded-full bg-[#0b7a44] animate-pulse"></span>
+                      Nuvem Ativa (Sincronizado)
+                    </span>
+                  ) : (
+                    <span 
+                      title="Os dados estão salvos apenas no seu navegador. Para sincronizar em tempo real com toda a equipe, configure as credenciais da nuvem."
+                      className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded-full text-[10px] sm:self-center self-start font-semibold bg-amber-50 text-amber-800 border border-amber-200"
+                    >
+                      <span className="w-1.5 h-1.5 rounded-full bg-amber-500"></span>
+                      Modo Offline (Salvo no Navegador)
+                    </span>
+                  )}
+                </div>
               </div>
             </div>
 
